@@ -1,0 +1,93 @@
+### RUN - Pivoting store_sales into wide format needed for segmentation
+store_sales_wide = (store_sales[[store_sales_datecol,store_sales_keycol,store_sales_KPIcol]]
+                       .pivot(index=store_sales_datecol,
+                              columns=store_sales_keycol,
+                              values=store_sales_KPIcol
+                             )
+                       #.fillna(0)
+                      )
+ 
+sales_corr_db = store_sales_wide.corr()
+ 
+## Parameters for segmentation
+#Define correlation cutoff to be included as a 'best match' for a given DMA
+#CURRENT BEST PARAMETERS FOR AZO are 0.86 and 7
+corr_cutoff = 0.74
+#Define minimum DMA count for a group
+min_dma_count = 1 #don't change and if you feel like you need to go down to 1, this probably isn't a useful tool
+sales_volume_threshold = 0.07
+ 
+ 
+## turn this into an adjacency matrix and then create a mapping to hold index info
+A  = sales_corr_db.to_numpy()
+A = (A >= corr_cutoff).astype(int)
+ 
+mapping = dict(zip(range(0, len(sales_corr_db)), sales_corr_db.index))
+ 
+#graph density as a useful metric to tune corr_cutoff above
+graph_density = (sum(sum(A))*2) / ((205)*(204))
+print(graph_density)
+ 
+ #find maximal cliques
+import networkx as nx
+import itertools
+import time
+ 
+from networkx.algorithms.clique import find_cliques as maximal_cliques
+G = nx.from_numpy_array(A)
+start = time.time()
+#cliques2 = [s for s in nx.enumerate_all_cliques(G) if len(s) > min_store_count]
+cliques2 = [s for s in maximal_cliques(G) if len(s) >= min_store_count]
+end = time.time()
+time_taken = start - end
+print(time_taken)
+ 
+#creating a mapping dictionary from DMA to sales, so we can calculate sales volume of a clique
+sales_mapping = {}
+for dma in store_sales['DMA_CODE'].unique():
+    sales_mapping[dma] = store_sales[store_sales['DMA_CODE'] == dma]['TOTAL_RETAIL'].sum()
+ 
+#function so get the sales of a clique
+def sales_sum(clique1):
+    return sum(sales_mapping[dma] for dma in clique1)
+ 
+#convert numpy indices back into DMAs
+cliques = []
+for element in cliques2:
+    new_element = []
+    for element2 in element:
+        new_element.append((mapping[element2]))
+    cliques.append(new_element)
+       
+#turn maximal cliques into clusters by taking the largest sales volume cliques, and removing them and their elements from the pool and iterating until no more maximal cliques are left
+groups = {}
+grouped_DMA = []
+total_sales = store_sales['TOTAL_RETAIL'].sum()
+i = 1
+while len(cliques) != 0:
+    largest = max(cliques, key=sales_sum)
+    sales = 0
+    if (sales_sum(largest) / total_sales) >= sales_volume_threshold:
+        cliques.remove(largest)
+        groupname = 'Group_' + str(i)
+        i += 1
+        groups.update({
+            groupname:largest
+            })
+        grouped_DMA = grouped_DMA + largest
+        for clique in cliques:
+            for item in clique.copy():
+                if item in largest:
+                    clique.remove(item)
+    else:
+        break
+    cliques = [clique for clique in cliques if len(clique) >= min_dma_count]
+groups['Other'] = [dma for (index, dma) in mapping.items() if dma not in grouped_DMA]
+print(groups)
+ 
+ 
+
+
+
+
+
